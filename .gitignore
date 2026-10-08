@@ -1,0 +1,12 @@
+# Raw trading data must never be committed.
+*.csv
+*.xlsx
+public/data.json
+
+# Credentials
+.env*
+gha-creds-*.json
+*.key.json
+
+node_modules/
+dist/

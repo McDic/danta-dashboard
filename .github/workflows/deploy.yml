@@ -1,0 +1,76 @@
+name: Deploy dashboard
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Weekdays 16:40 and 23:00 KST, after the close and after evening bookkeeping.
+    - cron: '40 7 * * 1-5'
+    - cron: '0 14 * * 1-5'
+
+# Never add pull_request_target: it would hand repository secrets to code from forks.
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token for Workload Identity Federation
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Refuse raw data in the repository
+        run: |
+          if git ls-files | grep -Ei '\.(csv|xlsx)$|(^|/)data\.json$'; then
+            echo "Raw or generated data files are tracked; remove them from git." >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      # Prints only counts and sanitized errors; see scripts/build-data.ts.
+      - name: Fetch and aggregate
+        run: npm run data
+        env:
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SHEET_RANGE: ${{ vars.SHEET_RANGE }}
+
+      - run: npm run build
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
