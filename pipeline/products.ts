@@ -6,6 +6,11 @@ export interface Product {
   kind: 'stock' | 'index' | 'currency'
   /** KRW notional = price × multiplier × contracts */
   multiplier: number
+  /**
+   * The name's multiplier is nominal: the contract was adjusted after a corporate action
+   * (e.g. a rights offering) and trades with a non-integer multiplier. parse.ts infers it.
+   */
+  adjusted?: boolean
 }
 
 /**
@@ -22,14 +27,14 @@ const BY_UNDERLYING: Record<string, Product> = {
 const FUTURES_CODE = /^A[0-9A-Z]{7}$/
 /**
  * Stock futures names end with their share multiplier, e.g. "테스트종목 F 202612 (  10)".
- * Kiwoom sometimes appends "*" ("테스트종목 F 202612 (  10)*"); if that marks an adjusted
- * contract with a different multiplier, the PnL reconciliation in parse.ts rejects the row.
+ * Kiwoom appends "*" to adjusted contracts ("테스트종목 F 202612 (  10)*"), whose real
+ * multiplier differs slightly from the one in the name.
  */
-const STOCK_MULTIPLIER = /\(\s*(\d+)\s*\)\s*\*?\s*$/
+const STOCK_MULTIPLIER = /\(\s*(\d+)\s*\)\s*(\*?)\s*$/
 
 export function resolveProduct(code: string, name: string): Product | undefined {
   if (!FUTURES_CODE.test(code)) return undefined
   const stock = STOCK_MULTIPLIER.exec(name)
-  if (stock) return { kind: 'stock', multiplier: Number(stock[1]) }
+  if (stock) return { kind: 'stock', multiplier: Number(stock[1]), ...(stock[2] ? { adjusted: true } : {}) }
   return BY_UNDERLYING[code.slice(1, 3)]
 }

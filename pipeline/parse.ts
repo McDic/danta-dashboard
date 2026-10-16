@@ -38,6 +38,8 @@ const MAX_REPORTED_ERRORS = 20
  */
 const RECONCILE_TOLERANCE_PER_UNIT = 0.05
 const RECONCILE_TOLERANCE_FIXED = 10
+/** An adjusted contract's inferred multiplier must stay this close to the name's nominal one. */
+const ADJUSTED_MAX_DEVIATION = 0.2
 
 /**
  * Parses sheet rows (from the Sheets API or a CSV export) into validated exits.
@@ -55,14 +57,15 @@ export function parseExits(rows: readonly (readonly unknown[])[]): Exit[] {
     index[key] = i
   }
 
-  const exits: Exit[] = []
+  const candidates: { dataRow: number; exit: Exit; adjusted: boolean }[] = []
   const errors: string[] = []
+  const rowError = (dataRow: number, column: Column, problem: string) => errors.push(`data row ${dataRow}, "${COLUMNS[column]}": ${problem}`)
 
   rows.slice(headerIndex + 1).forEach((row, i) => {
     const dataRow = i + 1
     if (row.every((cell) => text(cell) === '')) return
 
-    const fail = (column: Column, problem: string) => errors.push(`data row ${dataRow}, "${COLUMNS[column]}": ${problem}`)
+    const fail = (column: Column, problem: string) => rowError(dataRow, column, problem)
     const cell = (column: Column) => row[index[column]]
 
     const date = parseDate(cell('date'))
@@ -93,16 +96,36 @@ export function parseExits(rows: readonly (readonly unknown[])[]): Exit[] {
 
     if (!date || !product || !side || quantity === undefined || entryPrice === undefined || exitPrice === undefined || netPnl === undefined || fee === undefined) return
 
-    const units = quantity * product.multiplier
-    const expectedGross = (side === 'sell' ? exitPrice - entryPrice : entryPrice - exitPrice) * units
-    const tolerance = units * RECONCILE_TOLERANCE_PER_UNIT + RECONCILE_TOLERANCE_FIXED
-    if (Math.abs(expectedGross - fee - netPnl) > tolerance) {
-      fail('netPnl', `does not match (exit - entry) × qty × ${product.multiplier} - fee; wrong multiplier or a typo`)
-      return
-    }
-
-    exits.push({ date, code, side, quantity, entryPrice, exitPrice, multiplier: product.multiplier, netPnl, fee })
+    candidates.push({
+      dataRow,
+      exit: { date, code, side, quantity, entryPrice, exitPrice, multiplier: product.multiplier, netPnl, fee },
+      adjusted: product.adjusted === true,
+    })
   })
+
+  for (const [code, multiplier] of inferAdjustedMultipliers(candidates.filter((c) => c.adjusted).map((c) => c.exit))) {
+    for (const c of candidates) {
+      if (!c.adjusted || c.exit.code !== code) continue
+      if (Math.abs(multiplier / c.exit.multiplier - 1) > ADJUSTED_MAX_DEVIATION) {
+        rowError(c.dataRow, 'netPnl', `implies a multiplier far from the adjusted contract's nominal ${c.exit.multiplier}; check the row`)
+        c.exit.multiplier = Number.NaN
+      } else {
+        c.exit.multiplier = multiplier
+      }
+    }
+  }
+
+  const exits: Exit[] = []
+  for (const { dataRow, exit } of candidates) {
+    if (Number.isNaN(exit.multiplier)) continue
+    const units = exit.quantity * exit.multiplier
+    const tolerance = units * RECONCILE_TOLERANCE_PER_UNIT + RECONCILE_TOLERANCE_FIXED
+    if (Math.abs(grossPerUnit(exit) * units - exit.fee - exit.netPnl) > tolerance) {
+      rowError(dataRow, 'netPnl', `does not match (exit - entry) × qty × ${exit.multiplier} - fee; wrong multiplier or a typo`)
+      continue
+    }
+    exits.push(exit)
+  }
 
   if (errors.length > 0) {
     const shown = errors.slice(0, MAX_REPORTED_ERRORS)
@@ -110,6 +133,28 @@ export function parseExits(rows: readonly (readonly unknown[])[]): Exit[] {
     throw new SafeError(`${errors.length} invalid row(s):\n  ${shown.join('\n  ')}${more}`)
   }
   return exits
+}
+
+function grossPerUnit(exit: Exit): number {
+  return exit.side === 'sell' ? exit.exitPrice - exit.entryPrice : exit.entryPrice - exit.exitPrice
+}
+
+/**
+ * Infers each adjusted contract's multiplier from its own rows: Σ(net PnL + fee) / Σ(price gain × qty).
+ * Pooling the rows averages out the sheet's rounding. A code with only flat trades keeps its nominal
+ * multiplier, which only affects its turnover slightly.
+ */
+function inferAdjustedMultipliers(exits: readonly Exit[]): Map<string, number> {
+  const sums = new Map<string, { pnl: number; gain: number }>()
+  for (const e of exits) {
+    const s = sums.get(e.code) ?? { pnl: 0, gain: 0 }
+    s.pnl += e.netPnl + e.fee
+    s.gain += grossPerUnit(e) * e.quantity
+    sums.set(e.code, s)
+  }
+  const result = new Map<string, number>()
+  for (const [code, { pnl, gain }] of sums) if (gain !== 0) result.set(code, pnl / gain)
+  return result
 }
 
 function text(value: unknown): string {

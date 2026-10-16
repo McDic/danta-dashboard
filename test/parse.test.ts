@@ -19,10 +19,29 @@ describe('parseExits', () => {
     expect(parseExits(sheet(STOCK_SHORT_WIN, ['', '', ''], []))).toHaveLength(1)
   })
 
-  it('accepts a trailing "*" after the stock multiplier', () => {
-    const row = [...STOCK_SHORT_WIN]
-    row[2] = '테스트종목 F 202601 (  10)*'
-    expect(parseExits(sheet(row))[0]?.multiplier).toBe(10)
+  it('infers the multiplier of an adjusted ("*") stock future from its rows', () => {
+    // True multiplier 10.5: gains 1,000 × 3 and 200 × 2 → gross 31,500 and 4,200, fee 300 and 100.
+    const a = ['2026/01/05', 'AXX6A000', '테스트종목 F 202601 (  10)*', '매수', 3, 50000, 49000, 31200, 0, 300, 0]
+    const b = ['2026/01/05', 'AXX6A000', '테스트종목 F 202601 (  10)*', '매도', 2, 49000, 49200, 4100, 0, 100, 0]
+    const flat = ['2026/01/05', 'AXX6A000', '테스트종목 F 202601 (  10)*', '매도', 1, 49000, 49000, -50, 0, 50, 0]
+    const exits = parseExits(sheet(a, b, flat))
+    expect(exits.map((e) => e.multiplier)).toEqual([10.5, 10.5, 10.5])
+  })
+
+  it('keeps the nominal multiplier for an adjusted contract with only flat trades', () => {
+    const flat = ['2026/01/05', 'AXX6A000', '테스트종목 F 202601 (  10)*', '매도', 1, 49000, 49000, -50, 0, 50, 0]
+    expect(parseExits(sheet(flat))[0]?.multiplier).toBe(10)
+  })
+
+  it('rejects an adjusted contract whose rows disagree with each other', () => {
+    const a = ['2026/01/05', 'AXX6A000', '테스트종목 F 202601 (  10)*', '매수', 3, 50000, 49000, 31200, 0, 300, 0]
+    const b = ['2026/01/05', 'AXX6A000', '테스트종목 F 202601 (  10)*', '매수', 3, 50000, 49000, 29700, 0, 300, 0]
+    expect(() => parseExits(sheet(a, b))).toThrow(/does not match/)
+  })
+
+  it('rejects an adjusted contract whose implied multiplier is far from nominal', () => {
+    const row = ['2026/01/05', 'AXX6A000', '테스트종목 F 202601 (  10)*', '매수', 3, 50000, 49000, 299700, 0, 300, 0]
+    expect(() => parseExits(sheet(row))).toThrow(/far from/)
   })
 
   it('rejects unknown products', () => {
