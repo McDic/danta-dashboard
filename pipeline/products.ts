@@ -20,8 +20,12 @@ const BY_UNDERLYING: Record<string, Product> = {
 }
 
 const FUTURES_CODE = /^A[0-9A-Z]{7}$/
-/** Stock futures names end with their share multiplier, e.g. "테스트종목 F 202612 (  10)". */
-const STOCK_MULTIPLIER = /\(\s*(\d+)\s*\)\s*$/
+/**
+ * Stock futures names end with their share multiplier, e.g. "테스트종목 F 202612 (  10)".
+ * Kiwoom sometimes appends "*" ("테스트종목 F 202612 (  10)*"); if that marks an adjusted
+ * contract with a different multiplier, the PnL reconciliation in parse.ts rejects the row.
+ */
+const STOCK_MULTIPLIER = /\(\s*(\d+)\s*\)\s*\*?\s*$/
 
 export function resolveProduct(code: string, name: string): Product | undefined {
   if (!FUTURES_CODE.test(code)) return undefined

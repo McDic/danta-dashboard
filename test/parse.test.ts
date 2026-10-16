@@ -19,6 +19,12 @@ describe('parseExits', () => {
     expect(parseExits(sheet(STOCK_SHORT_WIN, ['', '', ''], []))).toHaveLength(1)
   })
 
+  it('accepts a trailing "*" after the stock multiplier', () => {
+    const row = [...STOCK_SHORT_WIN]
+    row[2] = '테스트종목 F 202601 (  10)*'
+    expect(parseExits(sheet(row))[0]?.multiplier).toBe(10)
+  })
+
   it('rejects unknown products', () => {
     const row = [...STOCK_SHORT_WIN]
     row[1] = 'A9961000'
